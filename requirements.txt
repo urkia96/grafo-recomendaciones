@@ -6,3 +6,4 @@ umap-learn
 plotly
 streamlit-plotly-events
 openpyxl
+torchvision
