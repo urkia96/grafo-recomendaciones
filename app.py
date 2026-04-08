@@ -18,7 +18,7 @@ PATH_RECO = "recomendador"
 def load_resources():
     pkl_path = os.path.join(PATH_RECO, "clubes_lectura_small_modelo1_keywords.pkl")
     index_path = os.path.join(PATH_RECO, "clubes_lectura_small_modelo1_keywords.index")
-    excel_path = os.path.join(PATH_RECO, "Etiquetas_Normalizadas_Final (1).xlsx")
+    excel_path = os.path.join(PATH_RECO, "recomendador.xlsx")
 
     # 1. Carga del Excel de metadatos
     df = pd.read_excel(excel_path)
