@@ -11,214 +11,134 @@ from streamlit_plotly_events import plotly_events
 import umap
 
 # --- 0. CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Mapa Visual de Libros", initial_sidebar_state="expanded")
+st.set_page_config(layout="wide", page_title="Recomendador Visual de Libros")
 
-# Estilos CSS para mejorar la estética de las tarjetas y el fondo
+# Estilos para las fichas de recomendación
 st.markdown("""
     <style>
-    .book-card {
-        background-color: #262730;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #464b5d;
-        margin-bottom: 20px;
-    }
-    .stPlotlyChart {
-        background-color: #0E1117;
-        border-radius: 10px;
-    }
+    .main-card { background-color: #1E1E2E; padding: 20px; border-radius: 15px; border: 2px solid #00FBFF; margin-bottom: 20px; }
+    .rec-card { background-color: #262730; padding: 15px; border-radius: 10px; border-left: 5px solid #FF0055; margin-bottom: 10px; }
+    .keyword-badge { background-color: #3d4150; color: #00FBFF; padding: 2px 8px; border-radius: 5px; font-size: 0.8em; margin-right: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
 PATH_RECO = "recomendador"
 
-# --- 1. CARGA DE RECURSOS ---
 @st.cache_resource
 def load_resources():
     base = os.path.dirname(__file__)
-    # Rutas unificadas según tu indicación
     pkl_path = os.path.join(base, PATH_RECO, "recomendador.pkl")
     index_path = os.path.join(base, PATH_RECO, "recomendador.index")
     excel_path = os.path.join(base, PATH_RECO, "recomendador.xlsx")
 
-    # Carga de Metadatos (Excel)
-    try:
-        df_meta = pd.read_excel(excel_path)
-    except FileNotFoundError:
-        st.error(f"No se encuentra el archivo Excel en: {excel_path}")
-        st.stop()
-    
-    # Carga de IA (PKL)
-    try:
-        with open(pkl_path, "rb") as f:
-            df_ia = pickle.load(f)
-    except EOFError:
-        st.error("El archivo .pkl está corrupto o incompleto. Por favor, súbelo de nuevo.")
-        st.stop()
-   
-    # Normalización de columna Lote
+    df_ia = pd.read_pickle(pkl_path)
     if 'Lote' not in df_ia.columns:
-        # Asumimos que la primera columna es el Lote si no tiene nombre
         df_ia.rename(columns={df_ia.columns[0]: 'Lote'}, inplace=True)
     df_ia['Lote'] = df_ia['Lote'].astype(str).str.strip()
- 
-    # Carga de Índice y Modelo
+    
+    # Limpieza de textos
+    for col in ['Keywords_ES', 'Genero_Principal_IA']:
+        if col in df_ia.columns:
+            df_ia[col] = df_ia[col].fillna("No disponible").astype(str)
+
     index = faiss.read_index(index_path)
     model = SentenceTransformer('intfloat/multilingual-e5-small')
     
-    # Limpieza de Keywords para evitar errores en el filtro
-    if 'Keywords_ES' in df_ia.columns:
-        df_ia['Keywords_ES'] = df_ia['Keywords_ES'].fillna("Desconocido").astype(str)
- 
     gc.collect()
-    return df_meta, df_ia, index, model
+    return df_ia, index, model
 
-df_meta, df_ia, index, model = load_resources()
+df_ia, index, model = load_resources()
 
-# --- 2. CÁLCULO DE COORDENADAS (UMAP) ---
+# --- 1. PROCESAMIENTO VISUAL (UMAP) ---
 @st.cache_resource
-def get_visual_map(_index):
-    # Extraemos vectores 384D
+def get_map_coords(_index):
     vectors = np.array([_index.reconstruct(i) for i in range(_index.ntotal)]).astype('float32')
-    # Reducción a 2D para el gráfico (Coseno para embeddings de texto)
     reducer = umap.UMAP(n_neighbors=15, min_dist=0.1, metric='cosine', random_state=42)
-    coords = reducer.fit_transform(vectors)
-    return coords, vectors
+    return reducer.fit_transform(vectors), vectors
 
-coords, vectors = get_visual_map(index)
-# Aseguramos que las coordenadas estén sincronizadas
-if len(coords) == len(df_ia):
-    df_ia['x'] = coords[:, 0]
-    df_ia['y'] = coords[:, 1]
-else:
-    st.error("Discrepancia de tamaño entre el índice FAISS y el archivo PKL.")
-    st.stop()
+coords, vectors = get_map_coords(index)
+df_ia['x'], df_ia['y'] = coords[:, 0], coords[:, 1]
 
-# --- 3. PANEL LATERAL (FILTROS INTERACTIVOS) ---
+# --- 2. PANEL LATERAL (PASO 4: FILTROS) ---
 with st.sidebar:
-    st.title("🎯 Panel de Control")
-    st.markdown("Usa estos filtros para explorar el mapa semántico de la biblioteca.")
+    st.header("⚙️ Herramientas de Control")
+    st.write("Selecciona qué libros quieres ver en el mapa:")
     
-    with st.form("panel_filtros"):
-        # Filtro de Género
-        if 'Genero_Principal_IA' in df_ia.columns:
-            generos = sorted(df_ia['Genero_Principal_IA'].unique())
-            sel_gens = st.multiselect("Filtrar por Géneros", options=generos, default=[])
-        else:
-            sel_gens = []
+    generos_disponibles = sorted(df_ia['Genero_Principal_IA'].unique())
+    sel_generos = st.multiselect("Filtrar por Géneros:", options=generos_disponibles, default=generos_disponibles)
+    
+    kw_filtro = st.text_input("Filtrar por palabra clave (ej. 'magia'):").lower()
+
+# Aplicar filtros de visibilidad
+mask_filtros = df_ia['Genero_Principal_IA'].isin(sel_generos)
+if kw_filtro:
+    mask_filtros &= df_ia['Keywords_ES'].str.lower().str.contains(kw_filtro)
+
+df_display = df_ia[mask_filtros].copy()
+
+# --- 3. INPUT DE USUARIO (PASO 1: PEDIR LOTE) ---
+st.title("🤖 Recomendador de Afinidad Semántica")
+lote_usuario = st.text_input("1️⃣ Introduce el número de Lote para analizar:", placeholder="Ejemplo: 121N").strip().upper()
+
+# --- 4. LÓGICA DE RECOMENDACIÓN Y GRAFO (PASO 2 y 3) ---
+if lote_usuario:
+    if lote_usuario in df_ia['Lote'].values:
+        # Encontrar el libro semilla
+        idx_semilla = df_ia[df_ia['Lote'] == lote_usuario].index[0]
+        libro_base = df_ia.iloc[idx_semilla]
         
-        # Filtro por Palabra Clave
-        kw_search = st.text_input("Buscar concepto (Keyword)", placeholder="ej: Historia, Magia, Crimen")
+        # Buscar 10 similares en el índice FAISS
+        distancias, indices = index.search(vectors[idx_semilla:idx_semilla+1], 11)
+        indices_vecinos = indices[0]
         
-        # Botón para ejecutar
-        aplicar = st.form_submit_button("Actualizar Mapa")
+        # Marcar estados para el grafo
+        df_display['Relación'] = "Otros libros"
+        df_display.loc[df_display.index.isin(indices_vecinos), 'Relación'] = "Similares"
+        df_display.loc[idx_semilla, 'Relación'] = "LIBRO SELECCIONADO"
 
-# Lógica de filtrado visual para el grafo
-df_plot = df_ia.copy()
-df_plot['Es_Visible'] = "Normal" # Estado por defecto
-
-# Si el usuario aplica filtros, definimos la visibilidad
-if aplicar and (sel_gens or kw_search):
-    mask = pd.Series([True] * len(df_plot))
-    if sel_gens:
-        mask &= df_plot['Genero_Principal_IA'].isin(sel_gens)
-    if kw_search:
-        # El filtrado es insensible a mayúsculas
-        mask &= df_plot['Keywords_ES'].str.contains(kw_search, case=False)
-    
-    df_plot.loc[mask, 'Es_Visible'] = "Resaltado"
-    df_plot.loc[~mask, 'Es_Visible'] = "Fondo"
-else:
-    # Si no hay filtros activos, coloreamos por género (comportamiento original)
-    df_plot['Es_Visible'] = df_plot['Genero_Principal_IA'] if 'Genero_Principal_IA' in df_plot.columns else "Libro"
-
-# --- 4. CUERPO PRINCIPAL (GRAFO + INFO) ---
-col_map, col_info = st.columns([2, 1])
-
-with col_map:
-    # --- RENDERIZADO OPTIMIZADO DEL GRAFO (px.scatter normal) ---
-    st.subheader("Mapa Semántico de la Biblioteca")
-    
-    # Definimos paleta de colores para el estado normal o los géneros
-    color_col = 'Es_Visible'
-    # Paleta de colores discreta y vibrante para destacar sobre fondo oscuro
-    color_scale = px.colors.qualitative.Alphabet 
-    
-    # Mapa de colores para cuando el panel de filtros está activo
-    discrete_map = {
-        "Resaltado": "#00FBFF", # Cian Neón para destacar
-        "Fondo": "rgba(80, 80, 80, 0.15)", # Gris muy transparente
-        "Normal": None # Usa paleta automática
-    }
-
-    fig = px.scatter(
-        df_plot, x='x', y='y',
-        color=color_col,
-        hover_name='Título',
-        # Definimos el mapa de colores si estamos filtrando
-        color_discrete_map=discrete_map if aplicar and (sel_gens or kw_search) else None,
-        # Si no filtramos, usamos la paleta automática
-        color_discrete_sequence=color_scale if not (aplicar and (sel_gens or kw_search)) else None,
-        template="plotly_dark",
-        height=750
-    )
-    
-    # OPTIMIZACIÓN DE PUNTOS: Sin línea de contorno y con buena opacidad
-    fig.update_traces(
-        marker=dict(
-            size=7, 
-            opacity=0.8, 
-            line=dict(width=0) # ELIMINAR CONTORNO para mejor rendimiento y visualización
+        # --- GRAFO INTERACTIVO ---
+        fig = px.scatter(
+            df_display, x='x', y='y',
+            color='Relación',
+            hover_name='Título',
+            color_discrete_map={
+                "LIBRO SELECCIONADO": "#FF0055",
+                "Similares": "#00FBFF",
+                "Otros libros": "rgba(100,100,100,0.15)"
+            },
+            template="plotly_dark", height=600
         )
-    )
-    
-    # Limpieza de diseño
-    fig.update_layout(
-        showlegend=False, 
-        margin=dict(l=0, r=0, t=0, b=0),
-        clickmode='event+select',
-        xaxis=dict(visible=False, showgrid=False, zeroline=False),
-        yaxis=dict(visible=False, showgrid=False, zeroline=False)
-    )
-    
-    # Capturar el clic con plotly_events
-    selected = plotly_events(fig, click_event=True, override_height=750)
+        fig.update_traces(marker=dict(size=9, line=dict(width=1, color='white')))
+        st.plotly_chart(fig, use_container_width=True)
 
-with col_info:
-    st.markdown("### 📖 Información del Lote")
-    
-    # Lógica al seleccionar un libro en el mapa
-    if selected:
-        idx = selected[0]['pointIndex']
-        # Mapeamos el índice de Plotly al índice real del DataFrame
-        libro = df_plot.iloc[idx]
+        # --- PANEL DE CONTROL Y JUSTIFICACIÓN (PASO 3) ---
+        st.markdown(f"### 2️⃣ Análisis de Similitud para el Lote {lote_usuario}")
+        col1, col2 = st.columns([1, 2])
         
-        # Tarjeta visual con estilo CSS personalizado
-        st.markdown(f"""
-            <div class="book-card">
-                <h2 style='color: #00FBFF; margin-top: 0;'>{libro['Título']}</h2>
-                <p><b>Autor:</b> {libro.get('Autor', 'Desconocido')}</p>
-                <p><b>Lote:</b> {libro['Lote']}</p>
-                <hr style="border: 0.5px solid #464b5d;">
-                <p><i>{libro.get('Keywords_ES', 'No hay palabras clave disponibles')}</i></p>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        st.write("")
-        # Acción: Buscar similares usando el índice FAISS
-        if st.button("🔍 Ver libros similares", use_container_width=True):
-            with st.spinner("Calculando similitud vectorial..."):
-                # Obtenemos el vector de búsqueda y buscamos los 6 más cercanos
-                distancias, indices = index.search(vectors[idx:idx+1], 6)
+        with col1:
+            st.markdown(f"""<div class="main-card">
+                <h3>{libro_base['Título']}</h3>
+                <p><b>Género:</b> {libro_base['Genero_Principal_IA']}</p>
+                <p><b>Keywords:</b><br>{libro_base['Keywords_ES']}</p>
+            </div>""", unsafe_allow_html=True)
+
+        with col2:
+            st.write("#### ¿Por qué estos libros son parecidos?")
+            for i in indices_vecinos[1:6]: # Mostrar top 5 similares
+                sim = df_ia.iloc[i]
+                # Encontrar keywords comunes (intersección simple de texto)
+                kw_comunes = [w for w in libro_base['Keywords_ES'].split(',') if w.strip() in sim['Keywords_ES']]
                 
-                st.write("---")
-                st.success("Recomendaciones basadas en afinidad semántica:")
-                # Listamos los 5 similares (saltamos el primero que es él mismo)
-                for i in indices[0][1:]:
-                    sim = df_ia.iloc[i]
-                    st.write(f"• **{sim['Título']}** ({sim['Lote']})")
+                st.markdown(f"""<div class="rec-card">
+                    <b>{sim['Título']}</b> (Lote: {sim['Lote']})<br>
+                    <small>Coincidencia en: {' '.join([f'<span class="keyword-badge">{k}</span>' for k in kw_comunes[:3]])}</small>
+                </div>""", unsafe_allow_html=True)
     else:
-        # Mensaje inicial cuando no hay selección
-        st.info("Haz clic en un punto del mapa para desplegar su ficha técnica y ver recomendaciones.")
+        st.error(f"El lote {lote_usuario} no se encuentra en la base de datos.")
+else:
+    st.info("Introduce un código de lote arriba para empezar la exploración.")
+    # Grafo por defecto (solo géneros)
+    fig_def = px.scatter(df_display, x='x', y='y', color='Genero_Principal_IA', template="plotly_dark", height=600)
+    st.plotly_chart(fig_def, use_container_width=True)
 
 
