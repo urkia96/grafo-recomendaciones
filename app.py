@@ -16,8 +16,8 @@ PATH_RECO = "recomendador"
 
 @st.cache_resource
 def load_resources():
-    pkl_path = os.path.join(PATH_RECO, "clubes_lectura_small_modelo1_keywords.pkl")
-    index_path = os.path.join(PATH_RECO, "clubes_lectura_small_modelo1_keywords.index")
+    pkl_path = os.path.join(PATH_RECO, "recomendador.pkl")
+    index_path = os.path.join(PATH_RECO, "recomendador.index")
     excel_path = os.path.join(PATH_RECO, "recomendador.xlsx")
 
     # 1. Carga del Excel de metadatos
