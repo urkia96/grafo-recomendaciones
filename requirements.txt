@@ -1,0 +1,8 @@
+streamlit
+pandas
+faiss-cpu
+sentence-transformers
+umap-learn
+plotly
+streamlit-plotly-events
+openpyxl
